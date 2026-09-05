@@ -1,7 +1,7 @@
 # arrr-network
 
-Client SDK for the [ARRR network](https://arrr.fun) — a mesh
-networking layer with WebSocket rooms, deterministic input ordering, state sync,
+Client SDK for the [ARRR network](https://arrr.fun) (Agentic Real-time Relay
+Routing) — a mesh networking layer with WebSocket rooms, deterministic input ordering, state sync,
 and cross-node replication.
 
 This package is transport only: it gets your inputs into a room, in order, and
