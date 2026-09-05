@@ -46,7 +46,7 @@ const RETURN_URL_KEY = 'arrr_auth_return_url';
 
 class AuthModule {
   private appId: string | null = null;
-  private centralServiceUrl: string = 'https://nodes.arrr.fun';
+  private centralServiceUrl: string = 'https://cloud.arrr.fun';
   private debug: boolean = false;
   private initialized: boolean = false;
 

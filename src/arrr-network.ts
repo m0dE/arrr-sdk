@@ -566,7 +566,7 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
         throw new Error('[arrr-network] appId is required. Pass appId in connect options.');
     }
 
-    const centralServiceUrl = options.centralServiceUrl || 'https://nodes.arrr.fun';
+    const centralServiceUrl = options.centralServiceUrl || 'https://cloud.arrr.fun';
 
     console.log('[arrr-network] Central service URL:', centralServiceUrl);
 
@@ -1289,7 +1289,7 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
 
 // Helper to get central service URL
 function getCentralServiceUrl(centralServiceUrl?: string): string {
-    return centralServiceUrl || 'https://nodes.arrr.fun';
+    return centralServiceUrl || 'https://cloud.arrr.fun';
 }
 
 // Room listing options

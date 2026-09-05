@@ -44,7 +44,7 @@ const conn = await connect('my-room', {
 conn.send({ move: { x: 1, y: 0 } });
 ```
 
-By default the SDK asks the central service at `https://nodes.arrr.fun` which
+By default the SDK asks the central service at `https://cloud.arrr.fun` which
 node to dial. Point `centralServiceUrl` (or `nodeUrl`, to skip discovery) at your
 own deployment to run against a self-hosted mesh.
 
