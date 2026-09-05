@@ -1,0 +1,61 @@
+{
+  "name": "arrr-network",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "SDK for connecting to mesh network for multiplayer applications",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "browser": {
+    "ws": false
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/m0dE/arrr-sdk.git"
+  },
+  "homepage": "https://github.com/m0dE/arrr-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/m0dE/arrr-sdk/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
+    "build:browser": "node build-browser.js",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mesh",
+    "network",
+    "multiplayer",
+    "sdk"
+  ],
+  "author": "arrr.fun",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@types/ws": "^8.5.10",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.0"
+  }
+}
