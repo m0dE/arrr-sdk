@@ -17,6 +17,7 @@ const sim: Sim<S, I> = {
   hash: (s) => { let h = 2166136261; for (const p of s.players) { h ^= p.x & 0xff; h = Math.imul(h, 16777619) >>> 0; h ^= p.vx & 0xff; h = Math.imul(h, 16777619) >>> 0; } h ^= s.tick; return h >>> 0; },
   serialize: (s) => JSON.parse(JSON.stringify(s)),
   deserialize: (j) => JSON.parse(JSON.stringify(j)) as S,
+  fingerprint: (s, id) => { const p = s.players.find((q) => q.id === id); return p ? `${p.x},${p.vx}` : ''; },
   status: (s) => ({ players: s.players.map((p) => ({ id: p.id, x: p.x, vx: p.vx })) }),
 };
 
@@ -203,5 +204,29 @@ describe('Lockstep end to end', () => {
     rt.advance(10_000);
     const r = a.ls.report();
     expect(Math.abs(r.prediction!.lead - r.prediction!.leadTarget)).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('World', () => {
+  it('draws the same rng for every client in a tick', async () => {
+    const { World } = await import('./world.js');
+    const a = new World(sim, { player: 'a', room: 'r' }), b = new World(sim, { player: 'b', room: 'r' });
+    expect(a.ctx(7).rng()).toBe(b.ctx(7).rng());
+    expect(a.ctx(7).rng()).not.toBe(a.ctx(8).rng());
+  });
+
+  it('refuses to step across a gap and stays holed until restored', async () => {
+    const { World } = await import('./world.js');
+    const w = new World(sim, { player: 'a', room: 'r' });
+    w.seedAt(0, [], 0);
+    expect(w.tick(1, [])).not.toBeNull();
+    expect(w.tick(3, [])).toBeNull();
+    expect(w.frame).toBe(1);
+    expect(w.holed).toBe(true);
+    expect(w.tick(4, [])).toBeNull();
+    expect(w.gaps).toEqual([{ from: 1, to: 4 }]);
+    w.restore(sim.serialize(w.state!), 4, [], 4);
+    expect(w.holed).toBe(false);
+    expect(w.tick(5, [])).not.toBeNull();
   });
 });

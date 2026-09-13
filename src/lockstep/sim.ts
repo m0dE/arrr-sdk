@@ -13,7 +13,7 @@ export interface SimContext {
   player: string;
   /** Every player currently in the room, sorted. */
   roster: string[];
-  /** Deterministic per (player, frame). */
+  /** Deterministic per (room, frame): every client draws the same sequence in the same tick. */
   rng: () => number;
 }
 
@@ -35,8 +35,15 @@ export interface Sim<S = unknown, I = unknown> {
   hash(state: S): number;
   serialize(state: S): unknown;
   deserialize(json: unknown): S;
-  /** Human-readable; `players` (an array of {id,...} or a map by id) with x,y,z,vx,vy,vz is the prediction fingerprint. */
-  status?(state: S): { players?: unknown } & Record<string, unknown>;
+  /**
+   * What the local player would notice being wrong: the prediction compares
+   * this for `player` between the predicted and the confirmed world at the
+   * same frame, and rolls back on a difference. Position and velocity at the
+   * least; anything the player can see of themselves at best.
+   */
+  fingerprint?(state: S, player: string): string | number;
+  /** Human-readable, for dashboards and tests only. */
+  status?(state: S): Record<string, unknown>;
 }
 
 /** mulberry32: integer-only, identical on every machine. */

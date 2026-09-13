@@ -60,6 +60,15 @@ export class Desync {
     }
   }
 
+  /** The stream skipped ticks: the world cannot continue without a resync. */
+  hole(): void {
+    const now = this.rt.now();
+    if (now - this.lastResyncAt < this.backoff || !this.opts.requestResync) return;
+    this.lastResyncAt = now;
+    this.resyncsRequested++;
+    this.opts.requestResync();
+  }
+
   /** After a resync, a fresh start. */
   reset(): void { this.streak = 0; }
 }

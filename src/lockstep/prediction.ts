@@ -196,15 +196,8 @@ export class Prediction<S = unknown, I = unknown> {
   }
 
   private fingerprint(s: S): string | null {
-    if (!this.sim.status) return null;
-    let st: ReturnType<NonNullable<Sim<S, I>['status']>>;
-    try { st = this.sim.status(s); } catch { return null; }
-    const players: any = st?.players;
-    if (!players) return null;
-    // `players` may be an array of {id,...} or a map keyed by id.
-    const p = Array.isArray(players) ? players.find((q) => q.id === this.world.opts.player) : players[this.world.opts.player];
-    if (!p) return null;
-    return [p.x, p.y, p.z, p.vx, p.vy, p.vz].join(',');
+    if (!this.sim.fingerprint) return null;
+    return String(this.sim.fingerprint(s, this.world.opts.player));
   }
 
   /** Rebuild the predicted world from the confirmed one and replay what is unconfirmed. */

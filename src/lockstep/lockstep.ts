@@ -12,7 +12,7 @@ import { Desync, type DesyncEvent } from './desync.js';
 import { Snapshots } from './snapshots.js';
 import { browserRuntime, type Runtime } from '../netcode/runtime.js';
 import { Session } from '../netcode/session.js';
-import type { Dial, TransportConnection } from '../netcode/transport.js';
+import type { Dial, TransportConnection, TransportEvents } from './transport.js';
 import { simVersionOf, type Sim } from './sim.js';
 import type { StreamInput } from './roster.js';
 import { lifecycleOf } from './roster.js';
@@ -48,7 +48,7 @@ export class Lockstep<S = unknown, I = unknown> {
   readonly desync: Desync;
   readonly snapshots: Snapshots;
   readonly simVersion: string;
-  readonly session: Session;
+  readonly session: Session<TransportEvents, TransportConnection>;
   connected = false;
   clientId: string | null = null;
   errors: string[] = [];
@@ -149,8 +149,8 @@ export class Lockstep<S = unknown, I = unknown> {
     // The verdict names the frame before this one.
     if (typeof majority === 'number' && majority !== 0) this.desync.verdict(frame - 1, majority, this.world.hashAt(frame - 1));
     const h = this.world.tick(frame, inputs);
+    if (h === null) { if (this.world.holed) this.desync.hole(); return; }
     this.playout.observe(frame, at);
-    if (h === null) return;
     if (this.conn) this.conn.sendStateHash(frame, h);
     let own = 0;
     for (const i of inputs) if (this.clientId && String(i.clientId) === this.clientId && !lifecycleOf(i)) own++;

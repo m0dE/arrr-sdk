@@ -131,8 +131,21 @@ export class Playout {
     this.target = this.smoothing * this.target + (1 - this.smoothing) * want;
   }
 
-  /** The time to draw other players at, right now. */
+  private lastAt = NaN;
+  private lastTime: PlayoutTime = { tick: -1, frac: 0, starved: false };
+
+  /**
+   * The time to draw other players at, right now. One answer per instant:
+   * every caller in a frame gets the same time, and the slew and the
+   * stability window advance once per frame, not once per caller.
+   */
   now(at: number = this.rt.now()): PlayoutTime {
+    if (at === this.lastAt) return this.lastTime;
+    this.lastAt = at;
+    return (this.lastTime = this.advance(at));
+  }
+
+  private advance(at: number): PlayoutTime {
     if (!this.clock.ready || this.newest < 0) return { tick: this.newest, frac: 0, starved: false };
     // The drawn delay follows the target with a slew, so the picture never jumps.
     const d = this.target - this.delayTicks;

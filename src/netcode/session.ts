@@ -8,7 +8,11 @@
  * disconnect events and nothing about the retries.
  */
 import type { Runtime } from './runtime.js';
-import type { Dial, TransportConnection, TransportEvents } from './transport.js';
+
+/** A connection a model can close; what it does otherwise is the model's business. */
+export interface Closable { leaveRoom(): void; close(): void }
+/** Opens a connection, wiring the given events; each model defines its own events. */
+export type Dialer<E, C extends Closable> = (events: E) => Promise<C>;
 
 export interface SessionOptions {
   reconnect?: boolean;
@@ -16,8 +20,8 @@ export interface SessionOptions {
   maxDelayMs?: number;
 }
 
-export class Session {
-  conn: TransportConnection | null = null;
+export class Session<E = unknown, C extends Closable = Closable> {
+  conn: C | null = null;
   reconnects = 0;
   errors: string[] = [];
   private stopped = false;
@@ -25,7 +29,7 @@ export class Session {
   private timer: unknown = null;
   private delay: number;
 
-  constructor(private readonly rt: Runtime, private readonly dialer: Dial, private readonly events: TransportEvents, private readonly opts: SessionOptions = {}) {
+  constructor(private readonly rt: Runtime, private readonly dialer: Dialer<E, C>, private readonly events: E, private readonly opts: SessionOptions = {}) {
     this.delay = opts.initialDelayMs ?? 500;
   }
 

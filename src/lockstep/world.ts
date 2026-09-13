@@ -5,8 +5,9 @@
  * or restored from a snapshot - and then advances exactly one tick per tick
  * the node broadcasts, applying that tick's inputs in the node's order. A
  * duplicate or out-of-order tick is refused here, once, rather than by every
- * caller; a gap is recorded, because a gap means the room's history has a
- * hole this client can never fill by itself.
+ * caller. A gap is refused too: stepping once across several missing ticks
+ * would produce a world nobody else has, so the world stops at its last
+ * good frame and reports the hole, which only a resync can fill.
  */
 import { Roster, lifecycleOf, type StreamInput } from './roster.js';
 import { makeRng, hashString, type Sim, type SimContext } from './sim.js';
@@ -35,6 +36,8 @@ export class World<S = unknown, I = unknown> {
   backwardSeqs = 0;
   /** Where this world began: the frame and how. */
   origin: { frame: number; via: 'seed' | 'snapshot' } | null = null;
+  /** True while a gap stands between this world and the stream: nothing advances until a resync. */
+  get holed(): boolean { const g = this.gaps[this.gaps.length - 1]; return !!g && g.from === this.frame; }
   /** Called after every tick with the new state - where a renderer records what it will interpolate. */
   onTick: ((state: S, frame: number) => void) | null = null;
   /** Ms per tick as currently learned from the node; the prediction beat is paced from it. */
@@ -50,7 +53,7 @@ export class World<S = unknown, I = unknown> {
       frame,
       player: this.opts.player,
       roster: this.roster.members,
-      rng: makeRng((hashString(this.opts.player) + Math.imul(frame, 2654435761)) >>> 0),
+      rng: makeRng((this.seed + Math.imul(frame, 2654435761)) >>> 0),
     };
   }
 
@@ -107,7 +110,12 @@ export class World<S = unknown, I = unknown> {
   tick(frame: number, inputs: StreamInput[]): number | null {
     if (this.state === null) return null;
     if (frame <= this.frame) { this.duplicateTicks++; return null; }
-    if (frame > this.frame + 1 && this.frame >= 0) this.gaps.push({ from: this.frame, to: frame });
+    if (frame > this.frame + 1 && this.frame >= 0) {
+      const last = this.gaps[this.gaps.length - 1];
+      if (!last || last.from !== this.frame) this.gaps.push({ from: this.frame, to: frame });
+      else last.to = frame;
+      return null;
+    }
     const c = this.ctx(frame);
     for (const input of inputs) {
       if (typeof input.seq === 'number') {

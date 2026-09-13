@@ -5,3 +5,5 @@ export { Roster, lifecycleOf, type StreamInput, type LifecycleKind } from './ros
 export { Desync, type DesyncEvent, type DesyncOptions } from './desync.js';
 export { Snapshots, type SnapshotsOptions } from './snapshots.js';
 export { makeRng, hashString, simVersionOf, type Sim, type SimContext, type InitContext } from './sim.js';
+export { dialWith, type DialOptions } from './dial.js';
+export type { TransportConnection, TransportEvents, Dial } from './transport.js';

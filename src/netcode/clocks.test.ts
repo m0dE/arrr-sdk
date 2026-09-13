@@ -102,6 +102,17 @@ describe('Playout', () => {
     expect(r.playout.delay).toBeLessThan(7);
   });
 
+  it('answers once per instant', () => {
+    const rt = new FakeRuntime();
+    const clock = new ServerClock(rt, { periodMs: 50 });
+    const playout = new Playout(rt, clock);
+    for (let k = 0; k < 40; k++) { rt.advance(50); clock.observe(k); playout.observe(k); clock.echo(rt.now() - 60, k - 0.5, rt.now()); }
+    const a = playout.now(), b = playout.now();
+    expect(b).toBe(a);
+    rt.advance(1);
+    expect(playout.now()).not.toBe(a);
+  });
+
   it('clamps at the newest tick rather than extrapolating', () => {
     const rt = new FakeRuntime();
     const clock = new ServerClock(rt, { periodMs: 50 });

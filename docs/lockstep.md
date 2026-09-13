@@ -33,9 +33,9 @@ injected (`Runtime`) so all of it runs under a fake clock in tests.
 | `Prediction` | The local player: a beat steps the predicted world one tick at a time with the held input and sends it; confirmed ticks only *reconcile* (fingerprint the local player, roll back and replay on mismatch). **Where an input lands** with today's node is the tick after it *arrives*, and node timers only fire late, so an input reaching the node near a boundary is inherently ambiguous — a free-running beat drifts through that band and dwells there (measured: 44–70 % of inputs off by one). So the beat is **phase-locked to the node's clock**: it fires when its input, one trip later, reaches the node mid-tick, and that tick is the target, exact by construction (measured: 99.3 % exact on a clean link, ~4 mispredictions per 600 beats). The lock follows the smoothed clock, not arrivals, so tick jitter never enters the cadence. A `dilation` hook lets a node that reports its input-buffer depth ask the client to tick a little faster or slower. |
 | `Lead` | With the lock, the landing offset is `1 + floor(oneWay / period)`, from the echo. On a link whose uplink jitter exceeds half a tick (satellite: ±1–2 ticks scatter, 34 % rollbacks) no client-side placement can be exact: that is the measured case for the node-side target-frame input buffer below. |
 | `Roster` | Who is in the room and which connection is whose: join/reconnect/leave/disconnect inputs and the client list, resolved so that every input the sim applies is attributed to a player, never to a claim in its payload. |
-| `World` | The confirmed simulation: seed at an agreed frame or restore from a snapshot plus catch-up, apply the stream in seq order, step, hash, keep a window of hashes and statuses. Duplicate and out-of-order ticks are refused here. |
+| `World` | The confirmed simulation: seed at an agreed frame or restore from a snapshot plus catch-up, apply the stream in seq order, step, hash, keep a window of hashes and statuses. Duplicate and out-of-order ticks are refused here; so is a gap - stepping once across missing ticks would make a world nobody else has - and a gap asks the node for a resync. |
 | `Desync` | Compares this client's hash for frame F against the room's verdict for F *when the verdict arrives* - windowed, not only on the very next tick (the node's verdict is empty above one tick of RTT today; a windowed comparison also works when that is fixed). Reports, and asks for a resync on a sustained disagreement. |
-| `Snapshots` | Publisher election by sorted roster (until the authority produces snapshots itself, which is the recommended node change), publish cadence, and the seq/frame the node needs to serve late joiners correctly - the SDK's bare `sendSnapshot` gets both wrong by default. |
+| `Snapshots` | Publisher election by the in-stream roster - the lowest id present, as the stream says at that frame - so every client elects the same publisher at the same tick without a message. The node's out-of-band client list is deliberately not used: it is not frame-consistent, so two clients reading it would elect differently for a moment. Publish cadence, and the seq/frame the node needs to serve late joiners correctly - the SDK's bare `sendSnapshot` gets both wrong by default. Until the authority produces snapshots itself, which is the recommended node change. |
 | `Reconnect` | Redial with backoff, resume as the same member, restore from the resync the node sends. The node's grace period is sized on the assumption this exists; the SDK never had it. |
 | `Lockstep` | Composes the above over a `Connection`; the one object a game talks to. |
 
@@ -49,11 +49,12 @@ applyInput(state, data, ctx, playerId)
 step(state, ctx)              advance exactly one tick
 hash(state) -> uint32
 serialize(state) -> json; deserialize(json) -> state
-status?(state) -> object      human-readable; its `players[].{x,y,z,vx,vy,vz}` is the prediction fingerprint
+fingerprint?(state, player)   what the local player would notice being wrong; compared predicted vs confirmed, rolls back on a difference
+status?(state) -> object      human-readable, diagnostics only
 substep?(state, ctx), substeps?
 ```
 `ctx` = `{ frame, player, roster, rng }` with a deterministic rng seeded from
-player and frame. Integer / fixed-point math only, no `Math.random`, no
+the room and the frame - the same sequence on every client in the same tick. Integer / fixed-point math only, no `Math.random`, no
 `Date`, no iteration over unordered maps.
 
 ## What the game does per frame

@@ -1,7 +1,9 @@
 /**
- * What any network model needs from a connection, and how one is opened.
- * A subset of the SDK's `Connection`; a test supplies a fake, a game supplies
- * `dialWith` over the real `connect`.
+ * What the lockstep model needs from a connection, and how one is opened: a
+ * subset of the SDK's `Connection`. This is lockstep's contract - ticks of
+ * inputs, hash votes, snapshots - and lives with the model; another model
+ * defines its own. A test supplies a fake, a game supplies `dialWith` over
+ * the real `connect`.
  */
 export interface TransportConnection {
   send(data: any, targetFrame?: number): void;
