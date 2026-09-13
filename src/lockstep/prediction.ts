@@ -86,6 +86,9 @@ export class Prediction<S = unknown, I = unknown> {
   }
 
   get running(): boolean { return this.timer !== null; }
+
+  /** Where a renderer records the local player, once per predicted tick. */
+  setOnStep(fn: ((state: unknown, frame: number) => void) | null): void { this.opts.onStep = fn ?? undefined; }
   get pendingCount(): number { return this.pending.length; }
   get period(): number { return this.beatPeriod; }
 
@@ -114,6 +117,14 @@ export class Prediction<S = unknown, I = unknown> {
     return c.serverBoundaryAt(k - 1) + c.period / 2 - c.oneWayMs;
   }
 
+  /** The frame whose beat is next due under the lock: the first k with beatAt(k) > now. */
+  private lockedNext(now: number): number {
+    const c = this.opts.clock!;
+    let k = Math.max(this.frame + 1, this.world.frame + 1);
+    for (let i = 0; i < 64 && this.beatAt(k) <= now - c.period / 2; i++) k++;
+    return k;
+  }
+
   private schedule(): void {
     const now = this.rt.now();
     const dil = Math.max(0.9, Math.min(1.1, this.opts.dilation?.() ?? 1));
@@ -121,12 +132,9 @@ export class Prediction<S = unknown, I = unknown> {
     const c = this.opts.clock;
     if (c && c.ready && this.state !== null) {
       // Lock to the clock: the next beat is the first anchor after now.
-      let k = this.frame + 1;
-      let at = this.beatAt(k);
-      // Timers slipped (a hidden tab): skip ahead rather than fire a burst.
-      while (at < now - c.period / 2 && k < this.frame + 8) { k++; at = this.beatAt(k); }
+      const k = this.lockedNext(now);
       this.nextBeatFrame = k;
-      wait = Math.max(0, at - now);
+      wait = Math.max(0, this.beatAt(k) - now);
     } else {
       this.nextBeatFrame = -1;
     }
@@ -159,6 +167,16 @@ export class Prediction<S = unknown, I = unknown> {
   /** The frame an input sent on the next beat lands in. */
   targetFrame(): number { return this.nextBeatFrame > this.frame ? this.nextBeatFrame : this.frame + 1; }
 
+  /**
+   * Timers stop when a tab is hidden, but ticks keep arriving. A beat that is
+   * more than a couple of periods overdue is taken now, from the tick, so
+   * the player keeps sending and the node keeps hearing from them.
+   */
+  beatIfStalled(at: number = this.rt.now()): void {
+    if (this.timer === null || !Number.isFinite(this.lastBeatAt)) return;
+    if (at - this.lastBeatAt > 3 * this.beatPeriod) { this.nextBeatFrame = -1; this.beat(at); }
+  }
+
   private ctx(frame: number): SimContext { return this.world.ctx(frame); }
 
   private applyOnly(data: I): void {
@@ -181,7 +199,10 @@ export class Prediction<S = unknown, I = unknown> {
     if (!this.sim.status) return null;
     let st: ReturnType<NonNullable<Sim<S, I>['status']>>;
     try { st = this.sim.status(s); } catch { return null; }
-    const p = st?.players?.find((q) => q.id === this.world.opts.player);
+    const players: any = st?.players;
+    if (!players) return null;
+    // `players` may be an array of {id,...} or a map keyed by id.
+    const p = Array.isArray(players) ? players.find((q) => q.id === this.world.opts.player) : players[this.world.opts.player];
     if (!p) return null;
     return [p.x, p.y, p.z, p.vx, p.vy, p.vz].join(',');
   }
@@ -204,8 +225,11 @@ export class Prediction<S = unknown, I = unknown> {
       if (this.frame < p.frame) this.advance(p.frame);
       this.replayed++;
     }
-    // And stand at the lead even with nothing in flight.
-    while (this.frame < this.world.frame + this.leadTarget) this.advance(this.frame + 1);
+    // And stand where the lock stands, so the next beat is the next frame
+    // rather than a burst of catch-up beats the player would see as a lurch.
+    const c = this.opts.clock;
+    const standAt = c && c.ready ? this.lockedNext(this.rt.now()) - 1 : this.world.frame + this.leadTarget;
+    while (this.frame < standAt) this.advance(this.frame + 1);
   }
 
   /**
@@ -237,9 +261,12 @@ export class Prediction<S = unknown, I = unknown> {
     }
     this.beatPeriod = this.world.periodHint;
     if (this.world.state === null) { this.state = null; return; }
-    if (this.state === null || this.frame < frame || this.frame > frame + this.leadTarget + 8) {
-      // Behind the confirmed world, or absurdly ahead (a stall on either
-      // side): rebuild at the confirmed frame and replay what is unconfirmed.
+    const c = this.opts.clock;
+    const standAt = c && c.ready ? this.lockedNext(at) - 1 : frame + this.leadTarget;
+    if (this.state === null || this.frame < frame || this.frame > standAt + 8) {
+      // Behind the confirmed world, or far ahead of where the lock stands (a
+      // stall on either side): rebuild at the confirmed frame and replay what
+      // is unconfirmed.
       this.rebuild(); return;
     }
     const expected = this.fingerprints.get(frame);

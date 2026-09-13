@@ -35,8 +35,8 @@ export interface Sim<S = unknown, I = unknown> {
   hash(state: S): number;
   serialize(state: S): unknown;
   deserialize(json: unknown): S;
-  /** Human-readable; `players[].{id,x,y,z,vx,vy,vz}` is used as the prediction fingerprint. */
-  status?(state: S): { players?: { id: string; x?: number; y?: number; z?: number; vx?: number; vy?: number; vz?: number }[] } & Record<string, unknown>;
+  /** Human-readable; `players` (an array of {id,...} or a map by id) with x,y,z,vx,vy,vz is the prediction fingerprint. */
+  status?(state: S): { players?: unknown } & Record<string, unknown>;
 }
 
 /** mulberry32: integer-only, identical on every machine. */

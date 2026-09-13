@@ -159,6 +159,7 @@ export class Lockstep<S = unknown, I = unknown> {
     // half a tick earlier on average - which is the time the echo means.
     for (let i = 0; i < own && this.sentAt.length; i++) this.clock.echo(this.sentAt.shift()!, frame - 0.5, at);
     this.prediction?.reconcile(frame, own, at);
+    this.prediction?.beatIfStalled(at);
     if (this.snapshots.due(frame, this.opts.player, this.world.roster.members) && this.conn && this.world.state !== null) {
       try {
         const payload = { seq: this.world.lastSeq, frame, v: this.simVersion, state: this.opts.sim.serialize(this.world.state) };
