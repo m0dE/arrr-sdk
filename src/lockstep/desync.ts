@@ -21,6 +21,10 @@ export interface DesyncOptions {
   resyncBackoffMs?: number;
   onDesync?: (e: DesyncEvent) => void;
   requestResync?: () => void;
+  /** Tell the node (it records desync reports); rate-limited here. */
+  report?: (e: DesyncEvent) => void;
+  /** Minimum frames between reports to the node. */
+  reportEveryFrames?: number;
 }
 
 export class Desync {
@@ -31,6 +35,8 @@ export class Desync {
   resyncsRequested = 0;
   private streak = 0;
   private lastResyncAt = -Infinity;
+  private lastReportFrame = -Infinity;
+  reportsSent = 0;
   private readonly threshold: number;
   private readonly backoff: number;
 
@@ -51,6 +57,10 @@ export class Desync {
     this.events.push(e);
     if (this.events.length > 50) this.events.shift();
     this.opts.onDesync?.(e);
+    if (this.opts.report && frame - this.lastReportFrame >= (this.opts.reportEveryFrames ?? 40)) {
+      this.lastReportFrame = frame; this.reportsSent++;
+      try { this.opts.report(e); } catch { /* reporting must never break the sim */ }
+    }
     const now = this.rt.now();
     if (this.streak >= this.threshold && now - this.lastResyncAt >= this.backoff && this.opts.requestResync) {
       this.lastResyncAt = now;

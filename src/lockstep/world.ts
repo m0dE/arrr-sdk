@@ -17,6 +17,12 @@ export interface WorldOptions {
   room: string;
   /** Hashes and statuses kept, in frames. */
   historyFrames?: number;
+  /**
+   * Hash the world every N ticks, not every tick. Hashing a room of a
+   * hundred is a tick's worth of work by itself; a verdict every half second
+   * catches a divergence as surely as one every tick, half a second later.
+   */
+  hashEvery?: number;
 }
 
 export class World<S = unknown, I = unknown> {
@@ -27,6 +33,7 @@ export class World<S = unknown, I = unknown> {
   readonly statuses = new Map<number, unknown>();
   private readonly keep: number;
   private readonly seed: number;
+  readonly hashEvery: number;
   duplicateTicks = 0;
   gaps: { from: number; to: number }[] = [];
   ticks = 0;
@@ -45,6 +52,7 @@ export class World<S = unknown, I = unknown> {
 
   constructor(readonly sim: Sim<S, I>, readonly opts: WorldOptions) {
     this.keep = opts.historyFrames ?? 600;
+    this.hashEvery = Math.max(1, opts.hashEvery ?? 1);
     this.seed = hashString(opts.room);
   }
 
@@ -68,21 +76,20 @@ export class World<S = unknown, I = unknown> {
   /**
    * Begin at `startAt` from the roster the history implies there - possibly
    * nobody, when our own join is still in flight and will arrive in the first
-   * tick - then replay the history's later frames up to `toFrame`.
+   * tick. The history after it is the caller's to replay (see Catchup).
    */
-  seedAt(startAt: number, history: StreamInput[], toFrame: number): boolean {
+  seedAt(startAt: number, history: StreamInput[]): boolean {
     const members = Roster.membersAt(history, startAt);
     this.learnOwners(history);
     for (const inp of history) if (typeof inp.frame === 'number' && inp.frame <= startAt) this.roster.apply(inp);
     this.state = this.sim.init({ roster: members, frame: startAt, seed: this.seed });
     this.frame = startAt;
     this.origin = { frame: startAt, via: 'seed' };
-    this.replay(history, startAt + 1, toFrame);
     return true;
   }
 
-  /** Restore from a snapshot taken at `snapshotFrame`, then replay history after it up to `toFrame`. */
-  restore(snapshot: unknown, snapshotFrame: number, history: StreamInput[], toFrame: number): boolean {
+  /** Restore from a snapshot taken at `snapshotFrame`; the history after it is the caller's to replay. */
+  restore(snapshot: unknown, snapshotFrame: number, history: StreamInput[]): boolean {
     let s: S;
     try { s = this.sim.deserialize(snapshot); } catch { return false; }
     this.state = s;
@@ -91,23 +98,23 @@ export class World<S = unknown, I = unknown> {
     this.learnOwners(history);
     // Membership as of the snapshot: joins at or before it are in it.
     for (const inp of history) if (typeof inp.frame === 'number' && inp.frame <= snapshotFrame) this.roster.apply(inp);
-    this.replay(history, snapshotFrame + 1, toFrame);
     return true;
   }
 
-  private replay(history: StreamInput[], from: number, to: number): void {
-    const byFrame = new Map<number, StreamInput[]>();
-    for (const inp of history) {
-      if (typeof inp.frame !== 'number' || inp.frame < from) continue;
-      let arr = byFrame.get(inp.frame);
-      if (!arr) byFrame.set(inp.frame, (arr = []));
-      arr.push(inp);
-    }
-    for (let f = from; f <= to; f++) this.tick(f, byFrame.get(f) || []);
+  /** The hash of the current state, computed now if this frame was not hashed. */
+  hashNow(): number {
+    if (this.state === null) return 0;
+    let h = this.hashes.get(this.frame);
+    if (h === undefined) { h = this.sim.hash(this.state) >>> 0; this.hashes.set(this.frame, h); }
+    return h;
   }
 
-  /** Advance one tick. Returns the hash, or null if the tick was refused. */
-  tick(frame: number, inputs: StreamInput[]): number | null {
+  /**
+   * Advance one tick. Returns the hash, `undefined` for a tick that was not
+   * hashed (between hash frames, or a `light` tick deep in a catch-up that
+   * nobody will ever ask about), or null if the tick was refused.
+   */
+  tick(frame: number, inputs: StreamInput[], light = false): number | null | undefined {
     if (this.state === null) return null;
     if (frame <= this.frame) { this.duplicateTicks++; return null; }
     if (frame > this.frame + 1 && this.frame >= 0) {
@@ -139,10 +146,12 @@ export class World<S = unknown, I = unknown> {
     if (this.sim.substep) for (let i = 0; i < (this.sim.substeps || 1); i++) this.sim.substep(this.state, c);
     this.frame = frame;
     this.ticks++;
-    const h = this.sim.hash(this.state) >>> 0;
-    this.hashes.set(frame, h);
+    if (light) return undefined;
+    let h: number | undefined;
+    if (frame % this.hashEvery === 0) { h = this.sim.hash(this.state) >>> 0; this.hashes.set(frame, h); }
     if (this.sim.status) { try { this.statuses.set(frame, this.sim.status(this.state)); } catch { /* diagnostics only */ } }
     for (const k of this.hashes.keys()) { if (k < frame - this.keep) { this.hashes.delete(k); this.statuses.delete(k); } else break; }
+    for (const k of this.statuses.keys()) { if (k < frame - 60) this.statuses.delete(k); else break; }
     this.onTick?.(this.state, frame);
     return h;
   }

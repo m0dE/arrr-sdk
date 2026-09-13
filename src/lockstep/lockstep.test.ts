@@ -274,6 +274,29 @@ describe('Prediction against a node that holds inputs until their frame', () => 
   });
 });
 
+describe('Catch-up', () => {
+  it('a joiner far behind replays between frames, absorbs ticks that land meanwhile, and agrees', async () => {
+    const rt = new FakeRuntime();
+    const node = new FakeNode(rt, 50);
+    node.start();
+    const a = client(rt, node, 'a', () => 10, { input: () => ({ vx: 1 }), snapshotEvery: 40 });
+    await a.ls.start();
+    for (let i = 0; i < 400; i++) { rt.advance(50); if (i % 3 === 0) a.ls.send({ vx: (i % 5) - 2 }); }
+    // The snapshot the node holds is old by now: unpublish it so the joiner replays the whole history.
+    node.snapshot = null;
+    const b = client(rt, node, 'b', () => 10, {});
+    await b.ls.start();
+    rt.advance(2000);
+    const r = b.ls.report();
+    expect(r.catchup.pending).toBe(0);
+    expect(r.catchup.replayed).toBeGreaterThan(300);
+    expect(b.ls.frame).toBe(a.ls.frame);
+    expect(b.ls.world.hashAt(b.ls.frame)).toBeDefined();
+    expect(b.ls.world.hashAt(b.ls.frame)).toBe(a.ls.world.hashAt(a.ls.frame));
+    expect(r.desync.disagreed).toBe(0);
+  });
+});
+
 describe('World', () => {
   it('draws the same rng for every client in a tick', async () => {
     const { World } = await import('./world.js');
