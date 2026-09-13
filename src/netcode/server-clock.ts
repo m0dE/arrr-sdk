@@ -2,7 +2,7 @@
  * Where the node's tick clock is, seen from this machine - from echoes.
  *
  * One mechanism. Zachary Booth Simpson's NetStorm method (as TrinityCore's
- * ComputeNewClockDelta and Nick's netlib/time-sync.ts): per echo of a message
+ * ComputeNewClockDelta and netlib's time-sync.ts): per echo of a message
  * the node handled at server tick `s`, sent at local `a` and confirmed at
  * local `b`, latency = (b - a) / 2 and delta = s - b + latency, in ticks.
  * A bounded window; samples whose latency exceeds the median plus one
