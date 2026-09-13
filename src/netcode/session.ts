@@ -20,6 +20,11 @@ export interface SessionOptions {
   maxDelayMs?: number;
 }
 
+export interface SessionHooks<C> {
+  /** The connection is open and assigned: the model wires whatever it sets on a connection here, for the first dial and every redial. */
+  onDialed?: (conn: C) => void;
+}
+
 export class Session<E = unknown, C extends Closable = Closable> {
   conn: C | null = null;
   reconnects = 0;
@@ -29,7 +34,7 @@ export class Session<E = unknown, C extends Closable = Closable> {
   private timer: unknown = null;
   private delay: number;
 
-  constructor(private readonly rt: Runtime, private readonly dialer: Dialer<E, C>, private readonly events: E, private readonly opts: SessionOptions = {}) {
+  constructor(private readonly rt: Runtime, private readonly dialer: Dialer<E, C>, private readonly events: E, private readonly opts: SessionOptions & SessionHooks<C> = {}) {
     this.delay = opts.initialDelayMs ?? 500;
   }
 
@@ -51,6 +56,7 @@ export class Session<E = unknown, C extends Closable = Closable> {
     try {
       this.conn = await this.dialer(this.events);
       this.delay = this.opts.initialDelayMs ?? 500;
+      this.opts.onDialed?.(this.conn);
     } catch (err) {
       this.errors.push(`dial: ${(err as Error).message}`);
       this.scheduleRedial();

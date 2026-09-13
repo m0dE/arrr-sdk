@@ -11,6 +11,7 @@ const BinaryMessageType = {
     ROOM_LEFT: 0x07,
     SYNC_HASH: 0x08,
     CLIENT_LIST_UPDATE: 0x09,
+    INPUT_SLACK: 0x0C,
     // Client-to-server markers (also used for server broadcast)
     BINARY_INPUT: 0x20,
     BINARY_SNAPSHOT: 0x21,
@@ -146,6 +147,13 @@ export interface Connection {
     // Callbacks that can be set after connection
     onReliabilityUpdate?: (scores: Record<string, number>, version: number) => void;
     onMajorityHash?: (frame: number, hash: number) => void;
+    /**
+     * From a node that buffers inputs per target frame: once a second, for
+     * each of this client's inputs since the last report, the frame it named
+     * and how many ticks early it reached the node (negative = late: it
+     * slipped into a later tick). An older node never sends it.
+     */
+    onInputSlack?: (frame: number, samples: { target: number; slack: number }[]) => void;
     onResyncSnapshot?: (data: Uint8Array, frame: number, inputs: NetworkInput[]) => void;  // Called when resync response arrives
 }
 
@@ -203,6 +211,8 @@ export interface DecodedMessage {
     events?: NetworkInput[];  // Backwards compatibility alias for inputs
     message?: string;
     clients?: any[];
+    /** INPUT_SLACK: per own input since the last report, the frame it named and ticks early it arrived (negative = late). */
+    slack?: { target: number; slack: number }[];
 }
 
 // Encode sync hash
@@ -463,6 +473,15 @@ export function decodeBinaryMessage(buffer: ArrayBuffer): DecodedMessage | null 
                 const clientsJson = new TextDecoder().decode(new Uint8Array(buffer, offset, clientsLen));
                 const clients = JSON.parse(clientsJson);
                 return { type: 'CLIENT_LIST_UPDATE', roomId, clients };
+            }
+
+            case BinaryMessageType.INPUT_SLACK: {
+                // [0x0C][frame:4][count:1]([target:4][slack:int8] x count)
+                const frame = view.getUint32(1, true);
+                const n = view.getUint8(5);
+                const slack: { target: number; slack: number }[] = [];
+                for (let i = 0; i < n && 11 + 5 * i <= buffer.byteLength; i++) slack.push({ target: view.getUint32(6 + 5 * i, true), slack: view.getInt8(10 + 5 * i) });
+                return { type: 'INPUT_SLACK', frame, slack };
             }
 
             case BinaryMessageType.BINARY_SNAPSHOT: {
@@ -818,8 +837,8 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
                         return;
                     }
 
-                    // Otherwise send as JSON (for join/leave messages, etc.)
-                    const msg = JSON.stringify({ type: 'SEND_INPUT', payload: { roomId: roomId, data } });
+                    // Otherwise send as JSON, the target frame alongside.
+                    const msg = JSON.stringify({ type: 'SEND_INPUT', payload: { roomId: roomId, data, frame: targetFrame ?? currentFrame } });
                     bytesOut += msg.length;
                     ws!.send(msg);
                 },
@@ -1259,6 +1278,10 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
                     }
                     case 'ROOM_LEFT': {
                         console.log(`[arrr-network] Left room ${msg.roomId}`);
+                        break;
+                    }
+                    case 'INPUT_SLACK': {
+                        if (instance.onInputSlack) instance.onInputSlack(msg.frame!, msg.slack!);
                         break;
                     }
                     case 'CLIENT_LIST_UPDATE': {

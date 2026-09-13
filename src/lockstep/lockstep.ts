@@ -70,7 +70,7 @@ export class Lockstep<S = unknown, I = unknown> {
     this.prediction = opts.predict
       ? new Prediction<S, I>(this.rt, opts.sim, this.world, {
         inputSource: opts.inputSource ?? (() => null),
-        send: (data, target) => { if (this.conn && this.connected) { this.conn.send(data, target); this.noteSent(); } },
+        send: (data, target) => { if (this.conn && this.connected) { this.conn.send(data, target); this.noteSent(target); } },
         clock: this.clock,
       }, 1000 / this.fps)
       : null;
@@ -79,7 +79,13 @@ export class Lockstep<S = unknown, I = unknown> {
       onTick: (frame, inputs, _sf, _sh, majority) => this.onTick(frame, inputs, majority),
       onDisconnect: () => this.onDisconnect(),
       onError: (e) => { this.errors.push(e); this.opts.onError?.(e); },
-    }, { reconnect: opts.reconnect });
+    }, {
+      reconnect: opts.reconnect,
+      onDialed: (conn) => {
+        conn.onResyncSnapshot = (data, frame, inputs) => this.onResync(data, frame, inputs);
+        conn.onInputSlack = (_f, samples) => this.onSlack(samples);
+      },
+    });
   }
 
   get conn(): TransportConnection | null { return this.session.conn; }
@@ -89,7 +95,6 @@ export class Lockstep<S = unknown, I = unknown> {
 
   async start(): Promise<void> {
     await this.session.start();
-    if (this.session.conn) this.session.conn.onResyncSnapshot = (data, frame, inputs) => this.onResync(data, frame, inputs);
   }
 
   stop(): void {
@@ -97,23 +102,59 @@ export class Lockstep<S = unknown, I = unknown> {
     this.session.stop();
   }
 
-  /** Send times of own inputs not yet seen in a tick, oldest first - each confirmation is a clock echo. */
-  private sentAt: number[] = [];
+  /** Own inputs not yet seen in a tick, oldest first: when sent and for which frame. Each confirmation is a clock echo. */
+  private sentAt: { at: number; target: number }[] = [];
+  /**
+   * Once the node has reported input slack, it is a node that holds inputs
+   * until their frame - and an echo then has to have the hold taken out of
+   * it, or the clock would read the buffer as distance. Confirmed own inputs
+   * wait here, by the frame they landed in, for the report that says how
+   * long each was held.
+   */
+  private nodeBuffers = false;
+  private awaitingSlack = new Map<number, { a: number; b: number }[]>();
+  private awaitingCount = 0;
 
   /** Send an input outside the prediction beat (a bot, or a non-predicted client). */
   send(data: I): void {
-    if (this.conn && this.connected) { this.conn.send(data, this.world.frame + 1); this.noteSent(); }
+    if (this.conn && this.connected) { const t = this.world.frame + 1; this.conn.send(data, t); this.noteSent(t); }
   }
 
-  private noteSent(): void {
-    this.sentAt.push(this.rt.now());
+  private noteSent(target: number): void {
+    this.sentAt.push({ at: this.rt.now(), target });
     if (this.sentAt.length > 64) this.sentAt.shift();
+  }
+
+  /** An own input was confirmed in tick `k` at local `b`: echo now, or after the slack report says how long it was held. */
+  private confirmed(a: number, k: number, b: number): void {
+    if (!this.nodeBuffers) { this.clock.echo(a, k - 0.5, b); return; }
+    let arr = this.awaitingSlack.get(k);
+    if (!arr) this.awaitingSlack.set(k, (arr = []));
+    arr.push({ a, b });
+    if (++this.awaitingCount > 128) { const first = this.awaitingSlack.keys().next().value!; this.awaitingCount -= this.awaitingSlack.get(first)!.length; this.awaitingSlack.delete(first); }
+  }
+
+  /** The node's report: for each own input, the frame it named and how many ticks early it arrived. */
+  private onSlack(samples: { target: number; slack: number }[]): void {
+    this.nodeBuffers = true;
+    this.prediction?.slack(samples);
+    for (const { target, slack } of samples) {
+      const hold = Math.max(0, slack);
+      const k = target - Math.min(0, slack);        // the frame it landed in
+      const arr = this.awaitingSlack.get(k);
+      const e = arr?.shift();
+      if (!e) continue;
+      this.awaitingCount--;
+      if (arr!.length === 0) this.awaitingSlack.delete(k);
+      // Handled by the node during tick k - hold - 1, so at k - hold - 0.5 on
+      // average; and the round trip is what it was minus the time it sat.
+      this.clock.echo(e.a, k - hold - 0.5, e.b - hold * this.clock.period);
+    }
   }
 
   private onConnect(snapshot: any, inputs: StreamInput[], frame: number, fps: number, clientId: string): void {
     this.connected = true;
     this.clientId = clientId;
-    if (this.session.conn) this.session.conn.onResyncSnapshot = (data, f, inputs) => this.onResync(data, f, inputs);
     if (fps > 0 && fps !== this.fps) this.fps = fps;
     this.world.periodHint = 1000 / this.fps;
     const restored = this.adopt(snapshot, inputs, frame);
@@ -157,7 +198,7 @@ export class Lockstep<S = unknown, I = unknown> {
     // Every own input that came back is an echo of the node's clock. The node
     // handled it somewhere inside the tick before the one it appears in -
     // half a tick earlier on average - which is the time the echo means.
-    for (let i = 0; i < own && this.sentAt.length; i++) this.clock.echo(this.sentAt.shift()!, frame - 0.5, at);
+    for (let i = 0; i < own && this.sentAt.length; i++) this.confirmed(this.sentAt.shift()!.at, frame, at);
     this.prediction?.reconcile(frame, own, at);
     this.prediction?.beatIfStalled(at);
     if (this.snapshots.due(frame, this.opts.player, this.world.roster.members) && this.conn && this.world.state !== null) {
@@ -197,7 +238,7 @@ export class Lockstep<S = unknown, I = unknown> {
       inputsApplied: this.world.inputsApplied, roster: this.world.roster.members.slice(), attribution: { ...this.world.roster.stats },
       clock: { period: this.clock.period, snaps: this.clock.snaps, tick: this.clock.tickAt(), serverTick: this.clock.serverTickAt(), oneWayMs: this.clock.oneWayMs, echoes: this.clock.echoCount },
       playout: { delayTicks: this.playout.delay, delayMs: this.playout.delayMs, targetTicks: this.playout.targetTicks, starvations: this.playout.starvations, stable: this.playout.stable },
-      prediction: p ? { frame: p.frame, lead: p.frame - this.world.frame, leadTarget: p.leadTarget, pending: p.pendingCount, period: p.period, rollbacks: p.rollbacks, mispredictions: p.mispredictions, replayed: p.replayed, beats: p.beats, landing: Object.fromEntries([...p.landing.entries()].sort((a, b) => a[0] - b[0])), samples: p.landingSamples } : null,
+      prediction: p ? { frame: p.frame, lead: p.frame - this.world.frame, leadTarget: p.leadTarget, pending: p.pendingCount, period: p.period, nodeBuffers: this.nodeBuffers, marginMs: p.marginMs, slackReports: p.slackReports, slackLate: p.slackLate, rollbacks: p.rollbacks, mispredictions: p.mispredictions, replayed: p.replayed, beats: p.beats, landing: Object.fromEntries([...p.landing.entries()].sort((a, b) => a[0] - b[0])), samples: p.landingSamples } : null,
       desync: { verdicts: this.desync.verdicts, agreed: this.desync.agreed, disagreed: this.desync.disagreed, resyncs: this.desync.resyncsRequested, last: this.desync.events.slice(-3) },
       snapshotsPublished: this.snapshots.published, simVersion: this.simVersion, errors: [...this.session.errors, ...this.errors].slice(-5),
     };

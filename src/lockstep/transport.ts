@@ -15,6 +15,8 @@ export interface TransportConnection {
   readonly connected: boolean;
   readonly clientId: string | null;
   onResyncSnapshot?: (data: Uint8Array, frame: number, inputs: any[]) => void;
+  /** Set by the model: a node that holds inputs per target frame reports, per input, the frame it named and how early it arrived. */
+  onInputSlack?: (frame: number, samples: { target: number; slack: number }[]) => void;
 }
 
 export interface TransportEvents {

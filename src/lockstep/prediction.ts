@@ -22,6 +22,15 @@
  * by construction. The lock follows the clock's smoothed due times, not the
  * arrivals, so tick jitter never enters the local cadence. Inputs carry the
  * target frame on the wire, for a node that honours it.
+ *
+ * With a node that does honour it - holds each input until the tick it names
+ * - arriving early costs nothing but latency and only arriving late still
+ * slips. Such a node reports, once a second, how early each input arrived.
+ * From that the beat keeps a margin: it fires that much sooner than the
+ * mid-tick aim, raised at once when inputs have been late (the shape of
+ * librsc's AdaptiveInputBuffer: boost on underrun), lowered slowly while
+ * every input has been a whole tick early. Against a node that reports
+ * nothing the margin stays zero and the lock alone places inputs.
  */
 import type { Runtime } from '../netcode/runtime.js';
 import type { Sim, SimContext } from './sim.js';
@@ -47,6 +56,12 @@ export interface PredictionOptions<I> {
   dilation?: () => number;
 }
 
+const SLACK_MIN = -8, SLACK_MAX = 8;
+/** Per sample; 0.995 keeps roughly the last ~200 inputs' weight - ten seconds at 20 Hz. */
+const SLACK_FORGET = 0.995;
+/** The margin covers all but this fraction of arrivals. */
+const SLACK_QUANTILE = 0.01;
+
 interface Pending<I> { frame: number; data: I; sentAt: number; phi?: number; base?: number }
 
 export class Prediction<S = unknown, I = unknown> {
@@ -65,6 +80,10 @@ export class Prediction<S = unknown, I = unknown> {
   /** Diagnostics: the first inputs' (phi, rtt estimate, base frame, predicted offset, actual offset). */
   readonly landingSamples: number[][] = [];
   leadTarget = 1;
+  /** Ms the beat fires ahead of the mid-tick aim, learned from the node's slack reports. */
+  marginMs = 0;
+  slackReports = 0;
+  slackLate = 0;
   rollbacks = 0;
   mispredictions = 0;
   replayed = 0;
@@ -114,7 +133,45 @@ export class Prediction<S = unknown, I = unknown> {
    */
   private beatAt(k: number): number {
     const c = this.opts.clock!;
-    return c.serverBoundaryAt(k - 1) + c.period / 2 - c.oneWayMs;
+    return c.serverBoundaryAt(k - 1) + c.period / 2 - c.oneWayMs - this.marginMs;
+  }
+
+  /**
+   * The node's report: per own input since the last one, how many ticks early
+   * it arrived against the frame it named. The values go into a forgetting
+   * histogram (librsc's AdaptiveInputBuffer: nothing sorted, the recent
+   * shape always what is read). A late input raises the margin once, when
+   * reported, by how late it was; the histogram's first percentile lowers
+   * it by a tenth of the spare per report while that percentile sits two or
+   * more whole ticks early. Bounded at four ticks. Inputs sent before the
+   * clock had locked are not evidence about the link and are left out.
+   */
+  private readonly slackHist = new Float64Array(SLACK_MAX - SLACK_MIN + 1);
+  private slackMass = 0;
+  /** The first frame a beat aimed at under the lock; inputs sent blind before it say nothing about the link. */
+  private firstLocked = Infinity;
+  slack(samples: { target: number; slack: number }[]): void {
+    const p = this.opts.clock?.period ?? this.beatPeriod;
+    let any = false, worst = 0;
+    for (const { target, slack: v } of samples) {
+      if (target < this.firstLocked) continue;
+      any = true;
+      if (v < 0) { this.slackLate++; if (-v > worst) worst = -v; }
+      for (let i = 0; i < this.slackHist.length; i++) this.slackHist[i] *= SLACK_FORGET;
+      this.slackMass = this.slackMass * SLACK_FORGET + (1 - SLACK_FORGET);
+      const b = Math.max(SLACK_MIN, Math.min(SLACK_MAX, v)) - SLACK_MIN;
+      this.slackHist[b] += 1 - SLACK_FORGET;
+    }
+    if (!any) return;
+    this.slackReports++;
+    // A late input is answered once, when reported: by how late it was, up
+    // to a tick. The histogram decides only when there is spare to give back.
+    if (worst > 0) { this.marginMs = Math.min(4 * p, this.marginMs + Math.min(1, worst) * p); return; }
+    if (this.slackMass < 0.2) return;
+    let sum = 0, q = SLACK_MAX;
+    const want = SLACK_QUANTILE * this.slackMass;
+    for (let i = 0; i < this.slackHist.length; i++) { sum += this.slackHist[i]; if (sum >= want) { q = i + SLACK_MIN; break; } }
+    if (q >= 2) this.marginMs = Math.max(0, this.marginMs - (q - 1) * p / 10);
   }
 
   /** The frame whose beat is next due under the lock: the first k with beatAt(k) > now. */
@@ -134,6 +191,7 @@ export class Prediction<S = unknown, I = unknown> {
       // Lock to the clock: the next beat is the first anchor after now.
       const k = this.lockedNext(now);
       this.nextBeatFrame = k;
+      if (k < this.firstLocked) this.firstLocked = k;
       wait = Math.max(0, this.beatAt(k) - now);
     } else {
       this.nextBeatFrame = -1;

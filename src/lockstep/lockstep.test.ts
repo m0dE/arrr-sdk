@@ -74,7 +74,18 @@ class FakeNode {
     return conn;
   }
 
-  input(clientId: string, data: any) {
+  /** Set to make the node hold inputs until their target frame and report slack, as the real node now does. */
+  buffers = false;
+  /** Every slack value ever recorded, for a test to read the distribution. */
+  slackLog: number[] = [];
+  held = new Map<number, any[]>();
+  slack = new Map<string, { target: number; slack: number }[]>();
+
+  input(clientId: string, data: any, target?: number) {
+    const next = this.frame + 1;
+    const s = this.buffers && typeof target === 'number' ? Math.min(40, target - next) : 0;
+    if (this.buffers) { this.slackLog.push(s); if (!this.slack.has(clientId)) this.slack.set(clientId, []); this.slack.get(clientId)!.push({ target: target ?? next, slack: s }); }
+    if (s > 0) { if (!this.held.has(next + s)) this.held.set(next + s, []); this.held.get(next + s)!.push({ clientId, data }); return; }
     const inp = { seq: ++this.seq, clientId, data };
     this.history.push(inp); this.pending.push(inp);
   }
@@ -98,6 +109,13 @@ class FakeNode {
 
   tick() {
     this.frame++;
+    const due = this.held.get(this.frame);
+    if (due) {
+      this.held.delete(this.frame);
+      const late = this.pending; this.pending = [];
+      for (const d of due) { const inp = { seq: ++this.seq, clientId: d.clientId, data: d.data }; this.history.push(inp); this.pending.push(inp); }
+      this.pending.push(...late);
+    }
     const inputs = this.pending; this.pending = [];
     for (const i of inputs) i.frame = this.frame;
     const majority = this.verdict(this.frame - 1);
@@ -105,15 +123,23 @@ class FakeNode {
       const f = this.frame, copy = inputs.map((i) => ({ ...i }));
       this.later(c, 'downAt', () => c.events.onTick(f, copy, 0, '', majority));
     }
+    if (this.buffers && this.frame % 20 === 0) {
+      for (const [id, samples] of this.slack) {
+        const c = this.clients.get(id)!, f = this.frame;
+        this.later(c, 'downAt', () => c.conn.onInputSlack?.(f, samples));
+      }
+      this.slack = new Map();
+    }
   }
 }
 
 class FakeConn implements TransportConnection {
   connected = true;
   onResyncSnapshot?: (data: Uint8Array, frame: number, inputs: any[]) => void;
+  onInputSlack?: (frame: number, samples: { target: number; slack: number }[]) => void;
   sent: any[] = [];
   constructor(private node: FakeNode, readonly clientId: string, readonly player: string) {}
-  send(data: any) { this.sent.push(data); const c = this.node.clients.get(this.clientId)!; this.node.later(c, 'upAt', () => this.node.input(this.clientId, data)); }
+  send(data: any, targetFrame?: number) { this.sent.push(data); const c = this.node.clients.get(this.clientId)!; this.node.later(c, 'upAt', () => this.node.input(this.clientId, data, targetFrame)); }
   sendSnapshot(snapshot: any, hash: string, seq?: number, frame?: number) { this.node.publish(seq ?? 0, frame ?? 0, snapshot, hash); }
   sendStateHash(frame: number, hash: number) { const c = this.node.clients.get(this.clientId)!; this.node.later(c, 'upAt', () => this.node.stateHash(this.clientId, frame, hash)); }
   requestResync() { /* not exercised here */ }
@@ -204,6 +230,47 @@ describe('Lockstep end to end', () => {
     rt.advance(10_000);
     const r = a.ls.report();
     expect(Math.abs(r.prediction!.lead - r.prediction!.leadTarget)).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('Prediction against a node that holds inputs until their frame', () => {
+  function jittery(seed: number, base: number, spread: number) { const r = xorshift(seed); return () => base + r() * spread; }
+
+  it('lands every input exactly once the margin has learned the uplink jitter', async () => {
+    const rt = new FakeRuntime();
+    const node = new FakeNode(rt, 50);
+    node.buffers = true;
+    node.start();
+    const a = client(rt, node, 'a', jittery(7, 60, 120), { predict: true, input: () => ({ vx: 1 }) });
+    await a.ls.start();
+    rt.advance(15_000);
+    const before = new Map(a.ls.prediction!.landing);
+    rt.advance(30_000);
+    const p = a.ls.report().prediction!;
+    let exact = 0, total = 0;
+    for (const [err, n] of Object.entries(p.landing)) { const d = (n as number) - (before.get(Number(err)) || 0); total += d; if (Number(err) === 0) exact += d; }
+    const recent = node.slackLog.slice(-600);
+    const hist: Record<number, number> = {};
+    for (const v of recent) hist[v] = (hist[v] || 0) + 1;
+    // Held as long as the jitter needs (±60 ms one way is ±1.2 ticks) and no longer.
+    const mean = recent.reduce((x, y) => x + y, 0) / recent.length;
+    expect(mean).toBeLessThan(2.5);
+    expect(recent.filter((v) => v < 0).length / recent.length).toBeLessThan(0.01);
+    expect(total).toBeGreaterThan(400);
+    expect(exact / total).toBeGreaterThan(0.99);
+    expect(p.marginMs).toBeGreaterThan(0);
+    expect(p.marginMs).toBeLessThanOrEqual(200);
+    expect(p.slackReports).toBeGreaterThan(20);
+  });
+
+  it('against a node that reports nothing the margin stays zero', async () => {
+    const rt = new FakeRuntime();
+    const node = new FakeNode(rt, 50);
+    node.start();
+    const a = client(rt, node, 'a', jittery(3, 60, 120), { predict: true, input: () => ({ vx: 1 }) });
+    await a.ls.start();
+    rt.advance(20_000);
+    expect(a.ls.report().prediction!.marginMs).toBe(0);
   });
 });
 
