@@ -99,7 +99,13 @@ export interface NetworkInput {
 }
 
 export interface Connection {
-    send(data: any): void;
+    /**
+     * Send an input. `targetFrame`, when given, is written into the binary
+     * input header where the node reads `clientFrame`: the frame the sender
+     * predicted this input for. A node that honours it applies the input
+     * there; today's nodes keep it for diagnostics.
+     */
+    send(data: any, targetFrame?: number): void;
     /**
      * Say something, or just say where you are.
      *
@@ -113,7 +119,7 @@ export interface Connection {
     sendVoice(x: number, y: number, z: number, data?: Uint8Array | null): void;
     /** True once the node has said it relays voice. Older nodes never do. */
     readonly voiceReady: boolean;
-    sendSnapshot(snapshot: any, hash: string): void;
+    sendSnapshot(snapshot: any, hash: string, seq?: number, frame?: number): void;
     leaveRoom(): void;
     close(): void;
     readonly connected: boolean;
@@ -795,7 +801,7 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
             }
 
             const instance: Connection = {
-                send(data: any) {
+                send(data: any, targetFrame?: number) {
                     if (!connected || !ws || ws.readyState !== 1) return;
 
                     // If data is already binary (Uint8Array/ArrayBuffer), send with binary marker + frame
@@ -805,7 +811,7 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
                         const wrapper = new Uint8Array(1 + 4 + binary.length);
                         const view = new DataView(wrapper.buffer);
                         wrapper[0] = 0x20;  // Binary input marker
-                        view.setUint32(1, currentFrame, true);  // Client's current frame
+                        view.setUint32(1, targetFrame ?? currentFrame, true);  // The frame this input is for
                         wrapper.set(binary, 5);
                         bytesOut += wrapper.length;
                         ws!.send(wrapper);
@@ -1386,3 +1392,6 @@ export const arrr = connect;
 // every script-tag user without arrrNetwork.auth. Export it instead.
 import { auth } from './auth.js';
 export { auth };
+import * as netcode from './netcode/index.js';
+import * as lockstep from './lockstep/index.js';
+export { netcode, lockstep };
