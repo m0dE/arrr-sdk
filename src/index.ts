@@ -32,3 +32,9 @@ export {
 
 // Export codec for engine to use
 export { encode, decode } from './codec/index.js';
+
+// Netcode on top of the transport. `netcode` is the model-agnostic core
+// (clocks, playout, interpolation, sessions); `lockstep` is the first network
+// model built on it. See docs/lockstep.md.
+export * as netcode from './netcode/index.js';
+export * as lockstep from './lockstep/index.js';

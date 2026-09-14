@@ -11,6 +11,7 @@ const BinaryMessageType = {
     ROOM_LEFT: 0x07,
     SYNC_HASH: 0x08,
     CLIENT_LIST_UPDATE: 0x09,
+    INPUT_SLACK: 0x0C,
     // Client-to-server markers (also used for server broadcast)
     BINARY_INPUT: 0x20,
     BINARY_SNAPSHOT: 0x21,
@@ -99,7 +100,13 @@ export interface NetworkInput {
 }
 
 export interface Connection {
-    send(data: any): void;
+    /**
+     * Send an input. `targetFrame`, when given, is written into the binary
+     * input header where the node reads `clientFrame`: the frame the sender
+     * predicted this input for. A node that honours it applies the input
+     * there; today's nodes keep it for diagnostics.
+     */
+    send(data: any, targetFrame?: number): void;
     /**
      * Say something, or just say where you are.
      *
@@ -113,7 +120,7 @@ export interface Connection {
     sendVoice(x: number, y: number, z: number, data?: Uint8Array | null): void;
     /** True once the node has said it relays voice. Older nodes never do. */
     readonly voiceReady: boolean;
-    sendSnapshot(snapshot: any, hash: string): void;
+    sendSnapshot(snapshot: any, hash: string, seq?: number, frame?: number): void;
     leaveRoom(): void;
     close(): void;
     readonly connected: boolean;
@@ -140,6 +147,13 @@ export interface Connection {
     // Callbacks that can be set after connection
     onReliabilityUpdate?: (scores: Record<string, number>, version: number) => void;
     onMajorityHash?: (frame: number, hash: number) => void;
+    /**
+     * From a node that buffers inputs per target frame: once a second, for
+     * each of this client's inputs since the last report, the frame it named
+     * and how many ticks early it reached the node (negative = late: it
+     * slipped into a later tick). An older node never sends it.
+     */
+    onInputSlack?: (frame: number, samples: { target: number; slack: number }[]) => void;
     onResyncSnapshot?: (data: Uint8Array, frame: number, inputs: NetworkInput[]) => void;  // Called when resync response arrives
 }
 
@@ -197,6 +211,8 @@ export interface DecodedMessage {
     events?: NetworkInput[];  // Backwards compatibility alias for inputs
     message?: string;
     clients?: any[];
+    /** INPUT_SLACK: per own input since the last report, the frame it named and ticks early it arrived (negative = late). */
+    slack?: { target: number; slack: number }[];
 }
 
 // Encode sync hash
@@ -457,6 +473,15 @@ export function decodeBinaryMessage(buffer: ArrayBuffer): DecodedMessage | null 
                 const clientsJson = new TextDecoder().decode(new Uint8Array(buffer, offset, clientsLen));
                 const clients = JSON.parse(clientsJson);
                 return { type: 'CLIENT_LIST_UPDATE', roomId, clients };
+            }
+
+            case BinaryMessageType.INPUT_SLACK: {
+                // [0x0C][frame:4][count:1]([target:4][slack:int8] x count)
+                const frame = view.getUint32(1, true);
+                const n = view.getUint8(5);
+                const slack: { target: number; slack: number }[] = [];
+                for (let i = 0; i < n && 11 + 5 * i <= buffer.byteLength; i++) slack.push({ target: view.getUint32(6 + 5 * i, true), slack: view.getInt8(10 + 5 * i) });
+                return { type: 'INPUT_SLACK', frame, slack };
             }
 
             case BinaryMessageType.BINARY_SNAPSHOT: {
@@ -795,7 +820,7 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
             }
 
             const instance: Connection = {
-                send(data: any) {
+                send(data: any, targetFrame?: number) {
                     if (!connected || !ws || ws.readyState !== 1) return;
 
                     // If data is already binary (Uint8Array/ArrayBuffer), send with binary marker + frame
@@ -805,15 +830,15 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
                         const wrapper = new Uint8Array(1 + 4 + binary.length);
                         const view = new DataView(wrapper.buffer);
                         wrapper[0] = 0x20;  // Binary input marker
-                        view.setUint32(1, currentFrame, true);  // Client's current frame
+                        view.setUint32(1, targetFrame ?? currentFrame, true);  // The frame this input is for
                         wrapper.set(binary, 5);
                         bytesOut += wrapper.length;
                         ws!.send(wrapper);
                         return;
                     }
 
-                    // Otherwise send as JSON (for join/leave messages, etc.)
-                    const msg = JSON.stringify({ type: 'SEND_INPUT', payload: { roomId: roomId, data } });
+                    // Otherwise send as JSON, the target frame alongside.
+                    const msg = JSON.stringify({ type: 'SEND_INPUT', payload: { roomId: roomId, data, frame: targetFrame ?? currentFrame } });
                     bytesOut += msg.length;
                     ws!.send(msg);
                 },
@@ -1255,6 +1280,10 @@ export async function connect(roomId: string, options: ConnectOptions): Promise<
                         console.log(`[arrr-network] Left room ${msg.roomId}`);
                         break;
                     }
+                    case 'INPUT_SLACK': {
+                        if (instance.onInputSlack) instance.onInputSlack(msg.frame!, msg.slack!);
+                        break;
+                    }
                     case 'CLIENT_LIST_UPDATE': {
                         // Learn every connection in the room, not just the ones
                         // whose join this client happened to witness.
@@ -1386,3 +1415,6 @@ export const arrr = connect;
 // every script-tag user without arrrNetwork.auth. Export it instead.
 import { auth } from './auth.js';
 export { auth };
+import * as netcode from './netcode/index.js';
+import * as lockstep from './lockstep/index.js';
+export { netcode, lockstep };
